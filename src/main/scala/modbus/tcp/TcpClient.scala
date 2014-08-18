@@ -8,12 +8,12 @@ import TcpClient._
 import scala.collection.immutable.Queue
 
 class TcpClient(remote: InetSocketAddress, client: ActorRef) extends Actor
-with LoggingFSM[State, StateData] {
+  with LoggingFSM[State, StateData] {
   import Tcp._
 
   implicit val system = context.system
 
-  val maxFailures = 10
+  final val maxFailures = 10
 
   startWith(DisconnectedState, StateData(Queue[ByteString](), null, 0))
 

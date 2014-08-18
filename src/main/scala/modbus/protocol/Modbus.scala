@@ -17,11 +17,7 @@ object Modbus {
   final val READ_REGISTERS: Byte = 3
   final val ERROR_CODE_OFFSET: Byte = 0x80.toByte
 
-  type ValueEncoder[A] = Vector[ModbusValue[A]] => ByteString
-  type ValueDecoder[A] = ByteString => Vector[ModbusValue[A]]
-
-  case class ModbusHeader(transactionID: Int, protocolID: Int = 0, remainingLength: Int,
-    unitID: Byte = 0xFF.toByte)
+  case class ModbusHeader(transactionID: Int, protocolID: Int = 0, remainingLength: Int, unitID: Byte = 0xFF.toByte)
 
   sealed trait ModbusValue[A]
   case class Coil(c: Boolean) extends ModbusValue[Boolean]
@@ -77,6 +73,13 @@ object Modbus {
   case object GeneralModbusException extends RuntimeException
 
 
+  type ValueEncoder[A] = Vector[ModbusValue[A]] => ByteString
+  type ValueDecoder[A] = ByteString => Vector[ModbusValue[A]]
+
+  def encodeValues[A](values: Vector[ModbusValue[A]], encoder: ValueEncoder[A]): ByteString = encoder (values)
+
+  def decodeValues[A](pdu: ByteString, decoder: ValueDecoder[A]): Vector[ModbusValue[A]] = decoder (pdu)
+
   val encodeCoils = { coils: Vector[ModbusValue[Boolean]] =>
     val bsb = ByteString.newBuilder
     coils.grouped(8)
@@ -84,12 +87,12 @@ object Modbus {
       .map { coilGroup =>
       coilGroup.zipWithIndex
         .foldRight(0) { (coil: (ModbusValue[Boolean], Int), byte: Int) =>
-        coil match {
-          case (Coil(v), i) => if (v) 1 << i else 0 + byte
-          case _ => byte
+          coil match {
+            case (Coil(v), i) => if (v) 1 << i else 0 + byte
+            case _ => byte
+          }
         }
       }
-    }
       .map { byte => bsb.putByte(byte.toByte) }
     bsb.result()
   }
@@ -106,7 +109,7 @@ object Modbus {
   val encodeRegisters = { registers: Vector[ModbusValue[Int]] =>
     val bsb = ByteString.newBuilder
     registers map {
-      case Register(_, v) => bsb.putShort(v)
+      case Register(v) => bsb.putShort(v)
       case _ =>
     }
     bsb.result()
@@ -133,11 +136,10 @@ object Modbus {
       .toVector
   }
 
-  def encodeValues[A](values: Vector[ModbusValue[A]], encoder: ValueEncoder[A]): ByteString = encoder (values)
-
-  def decodeValues[A](pdu: ByteString, decoder: ValueDecoder[A]): Vector[ModbusValue[A]] = decoder (pdu)
 
   type ByteCounter[A] = Vector[ModbusValue[A]] => Byte
+
+  def getByteCount[A](vs: Vector[ModbusValue[A]], bc: ByteCounter[A]): Byte = bc(vs)
 
   val coilByteCount = { coils: Vector[ModbusValue[Boolean]] =>
     if(coils.size % 8 != 0) ((coils.size / 8) + 1).toByte
@@ -147,8 +149,6 @@ object Modbus {
   val registerByteCount = { registers: Vector[ModbusValue[Int]] =>
     (registers.size * 2).toByte
   }
-
-  def getByteCount[A](vs: Vector[ModbusValue[A]], bc: ByteCounter[A]): Byte = bc(vs)
 
 
   def decodeIndication(pdu: ByteString): ModbusRequest = {
@@ -224,9 +224,9 @@ object Modbus {
 
   }
 
-  def encodeRequest(request: ModbusRequest): ByteString = {
+  def encodeRequest[A](request: ModbusRequest): ByteString = {
 
-    def encodeWriteSingleRequest(r: ModbusWriteSingleRequest): ByteString = {
+    def encodeWriteSingleRequest(r: ModbusWriteSingleRequest[A]): ByteString = {
       val bsb = ByteString.newBuilder
       bsb.putByte(r.fc)
       bsb.putShort(encodeAddress(r.a))
@@ -237,7 +237,7 @@ object Modbus {
       bsb.result()
     }
 
-    def encodeWriteMultipleRequest(r: ModbusWriteMultiRequest): ByteString = {
+    def encodeWriteMultipleRequest(r: ModbusWriteMultiRequest[A]): ByteString = {
       val bsb = ByteString.newBuilder
       bsb.putByte(r.fc)
       bsb.putShort(encodeAddress(r.sa))
@@ -262,15 +262,15 @@ object Modbus {
     }
 
     request match {
-      case wsr: ModbusWriteSingleRequest => encodeWriteSingleRequest(wsr)
-      case wmr: ModbusWriteMultiRequest => encodeWriteMultipleRequest(wmr)
+      case wsr: ModbusWriteSingleRequest[A] => encodeWriteSingleRequest(wsr)
+      case wmr: ModbusWriteMultiRequest[A] => encodeWriteMultipleRequest(wmr)
       case rr: ModbusReadRequest => encodeReadRequest(rr)
     }
   }
 
-  def encodeResponse(response: ModbusResponse): ByteString = {
+  def encodeResponse[A](response: ModbusResponse): ByteString = {
 
-    def encodeWriteSingleResponse(r: ModbusWriteSingleResponse): ByteString = {
+    def encodeWriteSingleResponse(r: ModbusWriteSingleResponse[A]): ByteString = {
       val bsb = ByteString.newBuilder
       bsb.putByte(r.fc)
       bsb.putShort(encodeAddress(r.a))
@@ -289,16 +289,16 @@ object Modbus {
       bsb.result()
     }
 
-    def encodeReadResponse(r: ModbusReadResponse): ByteString = {
+    def encodeReadResponse(r: ModbusReadResponse[A]): ByteString = {
       val bsb = ByteString.newBuilder
       bsb.putByte(r.fc)
       r.vs.head match {
         case Coil(_) => bsb.putByte(getByteCount(r.vs, coilByteCount))
         case Register(_) => bsb.putByte(getByteCount(r.vs, registerByteCount))
       }
-      bsb ++= (r.fc match {
-        case READ_COILS => encodeValues (r.vs, encodeCoils)
-        case READ_REGISTERS => encodeValues (r.vs, encodeRegisters)
+      bsb ++= (r.vs.head match {
+        case Coil(_) => encodeValues (r.vs, encodeCoils)
+        case Register(_) => encodeValues (r.vs, encodeRegisters)
       })
       bsb.result()
     }
@@ -311,9 +311,9 @@ object Modbus {
     }
 
     response match {
-      case r: ModbusWriteSingleResponse => encodeWriteSingleResponse(r)
+      case r: ModbusWriteSingleResponse[A] => encodeWriteSingleResponse(r)
       case r: ModbusWriteMultiResponse => encodeWriteMultipleResponse(r)
-      case r: ModbusReadResponse => encodeReadResponse(r)
+      case r: ModbusReadResponse[A] => encodeReadResponse(r)
       case r: ModbusErrorResponse => encodeErrorResponse(r)
     }
 

@@ -5,13 +5,13 @@ import akka.io.{ IO, Tcp }
 import java.net.InetSocketAddress
 import modbus.server.ModbusHandler
 
-class TcpServer(producer: ActorRef) extends Actor with ActorLogging {
+class TcpServer(producer: ActorRef, socket: InetSocketAddress) extends Actor with ActorLogging {
   import TcpServer._
   import Tcp._
 
   implicit val system = context.system
 
-  IO(Tcp) ! Bind(self, new InetSocketAddress(LOCAL_HOST, SERVER_PORT))
+  IO(Tcp) ! Bind(self, socket)
 
   def receive = {
     case b @ Bound(localAddress) => log.info(s"Server started at [$LOCAL_HOST] on port [$SERVER_PORT].")
@@ -33,5 +33,6 @@ object TcpServer {
   def LOCAL_HOST = "192.168.10.210"
   def SERVER_PORT = 5020
 
-  def props(producer: ActorRef) = Props(classOf[TcpServer], producer)
+  def props(producer: ActorRef, address: String, port: Int) =
+    Props(classOf[TcpServer], producer, new InetSocketAddress(address, port))
 }

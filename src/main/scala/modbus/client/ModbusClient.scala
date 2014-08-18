@@ -4,43 +4,50 @@ import akka.actor.{Props, ActorRef, Actor, ActorLogging}
 import java.net.InetSocketAddress
 import akka.util.ByteString
 import java.time.Instant
+import modbus.Messages
 import modbus.protocol.Modbus
 import modbus.tcp.TcpClient
-
 import scala.concurrent.duration._
 import scala.util.Try
 
 class ModbusClient(tcpClient: ActorRef, con: ActorRef) extends Actor with ActorLogging {
   import Modbus._
+  import Messages._
   import ModbusClient._
   import TcpClient.Send
 
   implicit val ec = context.dispatcher
 
-  val MAX_RETRIES = 5
-  val TIMEOUT_MILLIS = 300
-  val TIMEOUT = TIMEOUT_MILLIS.millis
-  val RESET_TIME = 10.minutes
-  val MAX_TRANS_ID = 0xFFFF
+  final val MAX_RETRIES = 5
+  final val TIMEOUT_MILLIS = 300
+  final val TIMEOUT = TIMEOUT_MILLIS.millis
+  final val MAX_TRANS_ID = 0xFFFF
 
   var transactions = Map[Int, Transaction]()
   var modbusTransactionID = 0
 
   val ticker = context.system.scheduler.schedule(TIMEOUT, TIMEOUT, self, Tick)
 
-  val counterReset = context.system.scheduler.schedule(RESET_TIME, RESET_TIME, self, ResetCounter)
-
   def receive = {
-    case m: ModbusRequest => handleRequest(m)
+    case m: ModbusMessage => handleMessage(m, sender())
     case b: ByteString => handleConfirmation(b)
     case Tick => handleTick()
-    case ResetCounter => handleResetCounter()
   }
 
-  private def handleRequest(r: ModbusRequest) = {
-    val transaction = buildTransaction(r)
+  private def handleMessage(m: ModbusMessage, s: ActorRef) = {
+    val request = createRequest(m)
+    val transaction = buildTransaction(request, s)
     storeModbusTransaction(transaction)
     sendMessage(transaction)
+  }
+
+  private def createRequest(m: ModbusMessage): ModbusRequest = m match {
+    case WriteCoil(a, v) => ModbusRequest(a, v)
+    case WriteRegister(a, v) => ModbusRequest(a, v)
+    case WriteCoils(sa, q, vs) => ModbusRequest(sa, q, vs)
+    case WriteRegisters(sa, q, vs) => ModbusRequest(sa, q, vs)
+    case ReadCoils(sa, q) => ModbusRequest(READ_COILS, sa, q)
+    case ReadRegisters(sa, q) => ModbusRequest(READ_REGISTERS, sa, q)
   }
 
   private def handleConfirmation(bytes: ByteString) = {
@@ -63,9 +70,7 @@ class ModbusClient(tcpClient: ActorRef, con: ActorRef) extends Actor with ActorL
     }
   }
 
-  private def handleResetCounter() = modbusTransactionID = 0
-
-  private def handleReadResponse(header: ModbusHeader, response: ReadResponse) = {
+  private def handleReadResponse(header: ModbusHeader, response: ModbusReadResponse) = {
     transactions get header.transactionID match {
       case Some(t) =>
         con ! response
@@ -81,7 +86,7 @@ class ModbusClient(tcpClient: ActorRef, con: ActorRef) extends Actor with ActorL
     }
   }
 
-  private def handleErrorResponse(header: ModbusHeader, response: ErrorResponse) = {
+  private def handleErrorResponse(header: ModbusHeader, response: ModbusErrorResponse) = {
     transactions get header.transactionID match {
       case Some(t) =>
         if(t.retries < MAX_RETRIES) {
@@ -99,10 +104,10 @@ class ModbusClient(tcpClient: ActorRef, con: ActorRef) extends Actor with ActorL
     tcpClient ! Send(encodeMessage(transaction))
   }
 
-  private def buildTransaction(request: ModbusRequest): Transaction = {
+  private def buildTransaction(request: ModbusRequest, s: ActorRef): Transaction = {
     val transID = nextTransactionID()
     val header = buildHeader(transID, request)
-    Transaction(transID, header, request, 0, Instant.now())
+    Transaction(transID, header, request, 0, Instant.now(), s)
   }
 
   private def buildHeader(transactionID: Int, request: ModbusRequest): ModbusHeader = {
@@ -118,7 +123,7 @@ class ModbusClient(tcpClient: ActorRef, con: ActorRef) extends Actor with ActorL
   private def storeModbusTransaction(transaction: Transaction) =
     transactions += (transaction.id -> transaction)
 
-  private def dropModbusTransaction(id: Int) = transactions = transactions drop id
+  private def dropModbusTransaction(id: Int) = { transactions = transactions drop id }
 
   private def updateRetries(transaction: Transaction) = { transactions =
     transactions.updated(transaction.id, transaction.copy(retries = transaction.retries + 1))
@@ -160,7 +165,7 @@ object ModbusClient {
   case object ResetCounter
 
   case class Transaction(id: Int, header: ModbusHeader, request: ModbusRequest, retries: Int,
-                         time: Instant)
+                         time: Instant, sender: ActorRef)
   case class Retry(transID: Int)
 
   def props(tcpClient: ActorRef) = Props(classOf[ModbusClient], tcpClient)
