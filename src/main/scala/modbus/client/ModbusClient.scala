@@ -169,4 +169,6 @@ object ModbusClient {
   case class Retry(transID: Int)
 
   def props(tcpClient: ActorRef) = Props(classOf[ModbusClient], tcpClient)
+
+  case object TestObj
 }
