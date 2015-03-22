@@ -4,45 +4,16 @@ import java.nio.ByteOrder
 import akka.util.ByteString
 
 object Modbus {
+  import ModbusTypes._
+  import ModbusCommands._
   implicit val byteOrder = ByteOrder.BIG_ENDIAN
 
-  final val ADDRESS_OFFSET = 3000
-  final val ON = true
-  final val OFF = false
-  final val WRITE_COIL: Byte = 5
-  final val WRITE_COILS: Byte = 15
-  final val READ_COILS: Byte = 1
-  final val WRITE_REGISTER: Byte = 6
-  final val WRITE_REGISTERS: Byte = 16
-  final val READ_REGISTERS: Byte = 3
   final val ERROR_CODE_OFFSET: Byte = 0x80.toByte
 
   case class ModbusHeader(transactionID: Int, protocolID: Int = 0, remainingLength: Int, unitID: Byte = 0xFF.toByte)
 
-  sealed trait ModbusValue[A]
-  case class Coil(c: Boolean) extends ModbusValue[Boolean]
-  case class Register(r: Int) extends ModbusValue[Int]
-
-  sealed trait ModbusRequest
-  case class ModbusReadRequest(fc: Byte, sa: Int, q: Int) extends ModbusRequest
-  case class ModbusWriteSingleRequest[A](fc: Byte, a: Int, v: ModbusValue[A]) extends ModbusRequest
-  case class ModbusWriteMultiRequest[A](fc: Byte, sa: Int, q: Int, vs: Vector[ModbusValue[A]]) extends ModbusRequest
-
-  object ModbusRequest {
-
-    def apply[A](a: Int, v: ModbusValue[A]): ModbusRequest = v match {
-      case Coil(_) => ModbusWriteSingleRequest(WRITE_COIL, a, v)
-      case Register(_) => ModbusWriteSingleRequest(WRITE_REGISTER, a, v)
-    }
-
-    def apply[A](sa: Int, q: Int, vs: Vector[ModbusValue[A]]): ModbusRequest = vs.head match {
-      case Coil(_) => ModbusWriteMultiRequest(WRITE_COILS, sa, q, vs)
-      case Register(_) => ModbusWriteMultiRequest(WRITE_REGISTERS, sa, q, vs)
-    }
-
-    def apply(fc: Byte, sa: Int, q: Int): ModbusRequest = ModbusReadRequest(fc, sa, q)
-
-  }
+  case class ModbusRequest(header: ModbusHeader, command: ModbusCommand)
+  // case class ModbusResponse(header: ModbusHeader, command: ModbusCommand)
 
   sealed trait ModbusResponse
   case class ModbusReadResponse[A](fc: Byte, sa: Int, q: Int, vs: Vector[ModbusValue[A]]) extends ModbusResponse
@@ -117,14 +88,14 @@ object Modbus {
 
   val decodeCoils = { bytes: ByteString =>
     bytes.flatMap { byte =>
-      for(offset <- 0 to 7) yield if(((byte >>> offset) & 1) == 1) Coil(ON) else Coil(OFF) }
+      for(offset <- 0 to 7) yield if(((byte >>> offset) & 1) == 1) Coil(true) else Coil(false) }
       .toVector
   }
 
   val decodeCoil = { bytes: ByteString =>
     val value = bytes.iterator.getShort & 0xFFFF
-    if (value == 0) Vector(Coil(OFF))
-    else if (value == 0xFF00) Vector(Coil(ON))
+    if (value == 0) Vector(Coil(false))
+    else if (value == 0xFF00) Vector(Coil(true))
     else throw DataValueException
   }
 
